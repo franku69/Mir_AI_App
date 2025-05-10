@@ -1,338 +1,399 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
+import ReactMarkdown from 'react-markdown';
 import axios from 'axios';
 import './App.css';
 
+const SIDEBAR_WIDTH = 210;
+
+function loadHistory() {
+    const data = localStorage.getItem('chat_history');
+    if (data) return JSON.parse(data);
+    return [
+        {
+            id: Date.now().toString(),
+            name: 'New Chat',
+            autoNamed: true,
+            conversation: [],
+        },
+    ];
+}
+
+function saveHistory(history) {
+    localStorage.setItem('chat_history', JSON.stringify(history));
+}
+
+const LOGO_URL = "https://scontent.fmnl13-4.fna.fbcdn.net/v/t1.15752-9/480657310_630716836372638_4796893253857913445_n.jpg?_nc_cat=109&ccb=1-7&_nc_sid=0024fc&_nc_eui2=AeFG37DlUxpN4aT2B2SfEOO4m6iOys1_SaWbqI7KzX9JpVSD7w78mR8hNDV3yA4Bs1Nckq-bSan1Vr0sbEiS9Lok&_nc_ohc=ATNu6bZIE0oQ7kNvwFCsb5R&_nc_oc=Adne4AjNsC9cdimLCyZId01ZAlAx0MvuZ2KNtqzpLgLTM8r4E7Ys8sfmST5_BNkS27DwTQwPDobKIEZ6ktkVuKz8&_nc_ad=z-m&_nc_cid=0&_nc_zt=23&_nc_ht=scontent.fmnl13-4.fna&oh=03_Q7cD2QEfN649jP88CusYX5kOZo4JVppno49qtAYdF8fhEL0Knw&oe=6844D35F";
+
 const App = () => {
     const [message, setMessage] = useState('');
-    const [conversation, setConversation] = useState([]);
+    const [chatHistory, setChatHistory] = useState(loadHistory());
+    const [currentSession, setCurrentSession] = useState(chatHistory[0].id);
     const [isLoading, setIsLoading] = useState(false);
-    const [isHealthMode, setIsHealthMode] = useState(false);
-    const [language, setLanguage] = useState('en');
-    const [connectionStatus, setConnectionStatus] = useState('connecting');
-    const [typingIndicator, setTypingIndicator] = useState(false);
-    const userId = useRef(`user_${Math.random().toString(36).substr(2, 9)}`).current;
+    const [isListening, setIsListening] = useState(false);
+    const userId = 'user123';
     const chatWindowRef = useRef(null);
-    const inputRef = useRef(null);
+    const cancelTokenSource = useRef(null);
+    const recognitionRef = useRef(null);
 
-    const healthPlaceholders = {
-        en: "Describe your symptoms (e.g., 'headache and fever for 3 days')",
-        fil: "Ilarawan ang iyong mga sintomas (hal., 'lagnat at sakit ng ulo sa loob ng 3 araw')"
+    // Get current conversation
+    const currentConv = chatHistory.find((s) => s.id === currentSession);
+
+    // Save history to localStorage on change
+    useEffect(() => {
+        saveHistory(chatHistory);
+    }, [chatHistory]);
+
+    // Speech-to-text handlers
+    const startListening = () => {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) {
+            alert('Speech recognition is not supported in this browser.');
+            return;
+        }
+        if (!recognitionRef.current) {
+            recognitionRef.current = new SpeechRecognition();
+            recognitionRef.current.lang = 'en-US';
+            recognitionRef.current.interimResults = false;
+            recognitionRef.current.maxAlternatives = 1;
+
+            recognitionRef.current.onresult = (event) => {
+                const transcript = event.results[0][0].transcript;
+                setMessage(prev => (prev ? prev + ' ' : '') + transcript);
+            };
+            recognitionRef.current.onend = () => setIsListening(false);
+            recognitionRef.current.onerror = () => setIsListening(false);
+        }
+        setIsListening(true);
+        recognitionRef.current.start();
     };
 
-    // Enhanced connection check
-    useEffect(() => {
-        const checkServer = async () => {
-            try {
-                const response = await axios.get('http://localhost:5000/health', {
-                    timeout: 2000
-                });
-                
-                setConnectionStatus(response.data?.status === 'OK' ? 'connected' : 'disconnected');
-            } catch (error) {
-                console.error('Connection error:', error);
-                setConnectionStatus('disconnected');
-            } finally {
-                inputRef.current?.focus();
-            }
-        };
-        
-        checkServer();
-        const interval = setInterval(checkServer, 10000);
-        return () => clearInterval(interval);
-    }, []);
+    const stopListening = () => {
+        if (recognitionRef.current) {
+            recognitionRef.current.stop();
+            setIsListening(false);
+        }
+    };
 
-    // Enhanced message handling with typing indicators
+    // Text-to-speech
+    const speak = (text) => {
+    if (!window.speechSynthesis) {
+        alert('Speech synthesis is not supported in this browser.');
+        return;
+    }
+    // Always cancel any current speech
+    window.speechSynthesis.cancel();
+
+    // Delay slightly to allow cancel to register, then speak
+    setTimeout(() => {
+        const utterance = new window.SpeechSynthesisUtterance(text.replace(/[*_`#>-]/g, ''));
+        utterance.lang = 'en-US';
+        utterance.rate = 1;
+        window.speechSynthesis.speak(utterance);
+    }, 100);
+};
+
     const sendMessage = useCallback(async () => {
-        if (!message.trim() || isLoading || connectionStatus !== 'connected') return;
+        if (!message.trim()) return;
+        const userMessage = { sender: 'user', text: message };
 
-        const userMessage = { 
-            sender: 'user', 
-            text: message,
-            isHealth: isHealthMode,
-            timestamp: new Date().toISOString()
-        };
-        
-        setConversation(prev => [...prev, userMessage]);
+        setChatHistory((prev) => prev.map((s) => {
+            if (s.id !== currentSession) return s;
+            if (s.autoNamed && s.conversation.length === 0) {
+                return {
+                    ...s,
+                    name: userMessage.text.replace(/\n/g, ' ').slice(0, 30) || "New Chat",
+                    conversation: [...s.conversation, userMessage],
+                };
+            }
+            return {
+                ...s,
+                conversation: [...s.conversation, userMessage],
+            };
+        }));
         setMessage('');
         setIsLoading(true);
-        setTypingIndicator(true);
+
+        cancelTokenSource.current = axios.CancelToken.source();
 
         try {
-            const endpoint = isHealthMode ? '/api/health-check' : '/api/chat';
-            const body = isHealthMode ? {
-                symptoms: message, 
-                userId, 
-                language,
-                sessionId: conversation.find(m => m.isHealth)?.sessionId
-            } : {
-                message, 
-                userId, 
-                language 
-            };
-
-            const response = await axios.post(`http://localhost:5000${endpoint}`, body, {
-                headers: { 'Content-Type': 'application/json' },
-                timeout: 15000
-            });
-
-            // Handle urgent medical alerts
-            if (isHealthMode && response.data?.severity === 'urgent') {
-                const alertMessage = language === 'fil' 
-                    ? '⚠️ Kailangan ng agarang atensyon medikal! Maaaring kailanganin mong pumunta sa emergency room.' 
-                    : '⚠️ This may require urgent medical attention! You should consider going to an emergency room.';
-                alert(alertMessage);
-            }
-
-            // Process bot response
-            const botMessage = {
-                sender: 'bot',
-                text: response.data.reply || response.data.diagnosis || (language === 'fil' 
-                    ? "Hindi ko ma-proseso ang iyong kahilingan" 
-                    : "I couldn't process that request"),
-                isHealth: isHealthMode,
-                timestamp: new Date().toISOString(),
-                ...(isHealthMode && response.data && {
-                    confidence: response.data.confidence,
-                    severity: response.data.severity,
-                    possibleConditions: response.data.possible_conditions || response.data.deepseek_analysis?.conditions?.map(c => c.condition),
-                    recommendations: response.data.recommendations,
-                    sessionId: response.data.session_id,
-                    isUrgent: response.data.severity === 'urgent'
-                })
-            };
-            
-            setConversation(prev => [...prev, botMessage]);
+            const response = await axios.post(
+                'http://localhost:5000/api/chat',
+                { message, userId, sessionId: currentSession },
+                { cancelToken: cancelTokenSource.current.token }
+            );
+            const botMessage = { sender: 'bot', text: response.data.reply };
+            setChatHistory((prev) =>
+                prev.map((s) =>
+                    s.id === currentSession
+                        ? { ...s, conversation: [...s.conversation, botMessage] }
+                        : s
+                )
+            );
         } catch (error) {
-            console.error('API Error:', error);
-            const errorMessage = {
-                sender: 'bot',
-                text: getErrorMessage(error, language),
-                isHealth: isHealthMode,
-                timestamp: new Date().toISOString()
-            };
-            setConversation(prev => [...prev, errorMessage]);
+            if (!axios.isCancel(error)) {
+                const errorMessage = { sender: 'bot', text: 'Oops! Something went wrong. Please try again.' };
+                setChatHistory((prev) =>
+                    prev.map((s) =>
+                        s.id === currentSession
+                            ? { ...s, conversation: [...s.conversation, errorMessage] }
+                            : s
+                    )
+                );
+            }
         } finally {
             setIsLoading(false);
-            setTypingIndicator(false);
-            inputRef.current?.focus();
         }
-    }, [message, userId, isHealthMode, language, conversation, connectionStatus, isLoading]);
+    }, [message, userId, currentSession]);
 
-    // Error message handler
-    const getErrorMessage = (error, lang) => {
-        const errors = {
-            ECONNABORTED: {
-                en: 'The server took too long to respond',
-                fil: 'Ang server ay tumagal ng masyadong mahaba upang tumugon'
-            },
-            503: {
-                en: 'The symptom checker is currently unavailable',
-                fil: 'Ang symptom checker ay hindi available sa ngayon'
-            },
-            default: {
-                en: "I couldn't process your request",
-                fil: 'May naganap na error sa pagsusuri ng iyong mga sintomas'
-            }
-        };
-        
-        const key = error.code === 'ECONNABORTED' ? 'ECONNABORTED' : 
-                  error.response?.status === 503 ? '503' : 'default';
-        
-        return errors[key][lang === 'fil' ? 'fil' : 'en'] + (lang === 'fil' ? '. Subukan muli.' : '. Please try again.');
+    const stopMessage = () => {
+        if (cancelTokenSource.current) {
+            cancelTokenSource.current.cancel('Operation canceled by the user.');
+            setIsLoading(false);
+        }
     };
 
-    // Auto-scroll with smooth behavior
     useEffect(() => {
         if (chatWindowRef.current) {
-            chatWindowRef.current.scrollTo({
-                top: chatWindowRef.current.scrollHeight,
-                behavior: 'smooth'
-            });
+            chatWindowRef.current.scrollTop = chatWindowRef.current.scrollHeight;
         }
-    }, [conversation, typingIndicator]);
+    }, [currentConv && currentConv.conversation]);
 
-    // Keyboard handling
-    const handleKeyDown = (e) => {
-        if (e.key === 'Enter' && !e.shiftKey && !isLoading && connectionStatus === 'connected') {
-            e.preventDefault();
+    const handleKeyPress = useCallback(
+        (e) => {
+            if (e.key === 'Enter' && !isLoading) {
+                sendMessage();
+            }
+        },
+        [sendMessage, isLoading]
+    );
+
+    const handleButtonClick = () => {
+        if (isLoading) {
+            stopMessage();
+        } else {
             sendMessage();
         }
     };
 
-    // Language toggle
-    const toggleLanguage = () => {
-        setLanguage(lang => lang === 'en' ? 'fil' : 'en');
-        inputRef.current?.focus();
-    };
+    // Sidebar handlers
+    function startNewSession() {
+        const newSession = {
+            id: Date.now().toString(),
+            name: 'New Chat',
+            autoNamed: true,
+            conversation: [],
+        };
+        setChatHistory((prev) => [newSession, ...prev]);
+        setCurrentSession(newSession.id);
+    }
 
-    // Health mode toggle with confirmation
-    const toggleHealthMode = () => {
-        if (isLoading) return;
-        
-        const confirmMessage = language === 'fil' 
-            ? 'Lumipat sa health mode? Ang kasalukuyang usapan ay mawi-wipe.'
-            : 'Switch to health mode? Current conversation will be cleared.';
-        
-        if (!isHealthMode && !window.confirm(confirmMessage)) return;
-        
-        setIsHealthMode(!isHealthMode);
-        setConversation([]);
-        inputRef.current?.focus();
-    };
+    function selectSession(id) {
+        setCurrentSession(id);
+    }
+
+    function deleteSession(id) {
+        let idx = chatHistory.findIndex((s) => s.id === id);
+        if (idx === -1) return;
+        const newHistory = chatHistory.filter((s) => s.id !== id);
+        setChatHistory(newHistory);
+        if (currentSession === id) {
+            if (newHistory.length > 0) setCurrentSession(newHistory[0].id);
+            else startNewSession();
+        }
+    }
+
+    function renameSession(id, newName) {
+        setChatHistory((prev) =>
+            prev.map((s) =>
+                s.id === id ? { ...s, name: newName, autoNamed: false } : s
+            )
+        );
+    }
+
+    // On first load, ensure at least one session
+    useEffect(() => {
+        if (!chatHistory.length) startNewSession();
+    }, []);
+
+    // For renaming
+    const [renamingId, setRenamingId] = useState(null);
+    const [renameValue, setRenameValue] = useState('');
 
     return (
-        <div className="chat-container">
-            <div className="app-header">
-                <h2>{language === 'fil' ? 'Chatbot Pangkalusugan' : 'Health Chatbot'}</h2>
-                <div className="header-controls">
-                    <button 
-                        onClick={toggleLanguage}
-                        className="language-toggle"
-                        disabled={isLoading}
-                        aria-label={language === 'en' ? 'Switch to Filipino' : 'Switch to English'}
-                    >
-                        {language === 'en' ? '🇵🇭 Filipino' : '🇺🇸 English'}
-                    </button>
-                    <div className={`connection-status ${connectionStatus}`}>
-                        {connectionStatus === 'connected' 
-                            ? (language === 'fil' ? 'Konektado' : 'Connected') 
-                            : connectionStatus === 'connecting'
-                            ? (language === 'fil' ? 'Kumokonekta...' : 'Connecting...')
-                            : (language === 'fil' ? 'Hindi Konektado' : 'Disconnected')}
-                    </div>
+        <div className="app-root">
+            <div className="sidebar" style={{ width: SIDEBAR_WIDTH }}>
+                <div className="sidebar-top">
+                    <img 
+                        src={LOGO_URL}
+                        alt="Logo"
+                        className="sidebar-logo"
+                    />
+                    <span className="sidebar-title">Mir AI</span>
+                </div>
+                <div className="sidebar-header">
+                    <button onClick={startNewSession} className="new-chat-btn">+ New Chat</button>
+                </div>
+                <div className="history-list">
+                    {chatHistory.map((session) => (
+                        <div
+                            key={session.id}
+                            className={`history-item ${session.id === currentSession ? 'active' : ''}`}
+                            onClick={() => selectSession(session.id)}
+                        >
+                            {renamingId === session.id ? (
+                                <input
+                                    type="text"
+                                    value={renameValue}
+                                    onChange={e => setRenameValue(e.target.value)}
+                                    onBlur={() => {
+                                        renameSession(session.id, renameValue.trim() || 'Untitled');
+                                        setRenamingId(null);
+                                    }}
+                                    onKeyDown={e => {
+                                        if (e.key === 'Enter') {
+                                            renameSession(session.id, renameValue.trim() || 'Untitled');
+                                            setRenamingId(null);
+                                        }
+                                    }}
+                                    autoFocus
+                                    className="rename-input"
+                                />
+                            ) : (
+                                <>
+                                    <span className="history-title" onDoubleClick={e => {
+                                        e.stopPropagation();
+                                        setRenamingId(session.id);
+                                        setRenameValue(session.name);
+                                    }}>
+                                        {session.name}
+                                    </span>
+                                    <span
+                                        className="delete-btn"
+                                        onClick={e => {
+                                            e.stopPropagation();
+                                            deleteSession(session.id);
+                                        }}
+                                    >✕</span>
+                                </>
+                            )}
+                        </div>
+                    ))}
                 </div>
             </div>
-
-            <div className="mode-toggle">
-                <button 
-                    onClick={toggleHealthMode}
-                    className={isHealthMode ? 'health-active' : ''}
-                    disabled={isLoading || connectionStatus !== 'connected'}
-                    aria-label={isHealthMode ? 'Exit health mode' : 'Enter health mode'}
-                >
-                    {isHealthMode 
-                        ? (language === 'fil' ? '🚑 Lumabas sa Health Mode' : '🚑 Exit Health Mode')
-                        : (language === 'fil' ? '🔍 Suriin ang Kalusugan' : '🔍 Health Check')}
-                </button>
-                {isHealthMode && (
-                    <p className="mode-hint">
-                        {language === 'fil' ? healthPlaceholders.fil : healthPlaceholders.en}
-                    </p>
-                )}
-            </div>
-
-            <div className="chat-window" ref={chatWindowRef}>
-                {conversation.length === 0 ? (
-                    <div className="welcome-message">
-                        {isHealthMode
-                            ? language === 'fil' 
-                                ? 'Ilarawan ang iyong mga sintomas upang makapagsimula.'
-                                : 'Describe your symptoms to get started.'
-                            : language === 'fil'
-                                ? 'Kumusta! Paano kita matutulungan ngayon?'
-                                : "Hello! How can I help you today?"}
+            <div className="phone-wrapper">
+                <div className="chat-container">
+                    <div className="chat-header">
+                        <img 
+                            src={LOGO_URL}
+                            alt="Logo"
+                            className="chat-logo"
+                        />
+                        Mir AI
                     </div>
-                ) : (
-                    conversation.map((msg, index) => (
-                        <div 
-                            key={`${msg.timestamp}-${index}`}
-                            className={`message ${msg.sender} ${msg.isHealth ? 'medical' : ''} ${msg.isUrgent ? 'urgent' : ''}`}
-                        >
-                            <div className="message-content">
-                                {msg.text}
-                                
-                                {msg.isHealth && (
-                                    <div className="medical-details">
-                                        {msg.confidence && (
-                                            <div className="confidence-badge">
-                                                {language === 'fil' 
-                                                    ? `Kumpiyansa: ${(msg.confidence * 100).toFixed(1)}%`
-                                                    : `Confidence: ${(msg.confidence * 100).toFixed(1)}%`}
-                                            </div>
-                                        )}
-                                        
-                                        {msg.possibleConditions?.length > 0 && (
-                                            <div className="conditions">
-                                                <strong>{language === 'fil' ? 'Posibleng Kondisyon:' : 'Possible Conditions:'}</strong>
-                                                <ul>
-                                                    {msg.possibleConditions.map((cond, i) => (
-                                                        <li key={i}>{cond}</li>
-                                                    ))}
-                                                </ul>
-                                            </div>
-                                        )}
-                                        
-                                        {msg.recommendations && (
-                                            <div className="recommendations">
-                                                <strong>{language === 'fil' ? 'Mga Rekomendasyon:' : 'Recommendations:'}</strong>
-                                                <p>{msg.recommendations}</p>
-                                            </div>
-                                        )}
+                    <div className="chat-window" ref={chatWindowRef}>
+                        {currentConv && currentConv.conversation.map((msg, index) => (
+                            <div key={index} className={`message ${msg.sender}`}>
+                                {msg.sender === "bot" ? (
+                                    <div className="bot-content">
+                                        <button
+                                            className="voice-play-btn"
+                                            title="Play Voice"
+                                            onClick={() => speak(msg.text)}
+                                            style={{
+                                                background: 'none',
+                                                border: 'none',
+                                                cursor: 'pointer',
+                                                marginRight: '6px',
+                                                color: '#007bff',
+                                                fontSize: '18px',
+                                                padding: '0'
+                                            }}
+                                        >🔊</button>
+                                        <div style={{flex: 1, minWidth: 0, wordBreak: "break-word", overflowWrap: "break-word"}}>
+                                            <ReactMarkdown
+                                                components={{
+                                                    code({node, inline, className, children, ...props}) {
+                                                        return !inline ? (
+                                                            <pre className="chat-code-block">
+                                                                <code {...props}>{children}</code>
+                                                            </pre>
+                                                        ) : (
+                                                            <code className="chat-inline-code" {...props}>{children}</code>
+                                                        );
+                                                    },
+                                                    img({node, ...props}) {
+                                                        return (
+                                                            <img
+                                                                {...props}
+                                                                alt={props.alt || "AI generated image"}
+                                                                style={{
+                                                                    maxWidth: '100%',
+                                                                    maxHeight: '240px',
+                                                                    display: 'block',
+                                                                    margin: '12px auto',
+                                                                    borderRadius: '14px',
+                                                                    boxShadow: '0 2px 10px #0001'
+                                                                }}
+                                                                loading="lazy"
+                                                            />
+                                                        );
+                                                    }
+                                                }}
+                                            >
+                                                {msg.text}
+                                            </ReactMarkdown>
+                                        </div>
                                     </div>
+                                ) : (
+                                    msg.text
                                 )}
                             </div>
-                            <div className="message-time">
-                                {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        ))}
+                        {isLoading && (
+                            <div className="message bot">
+                                <div className="loading-dots">
+                                    <span>.</span>
+                                    <span>.</span>
+                                    <span>.</span>
+                                </div>
                             </div>
-                        </div>
-                    ))
-                )}
-                
-                {(isLoading || typingIndicator) && (
-                    <div className={`message bot ${isHealthMode ? 'medical' : ''}`}>
-                        <div className="typing-indicator">
-                            <span></span>
-                            <span></span>
-                            <span></span>
-                        </div>
+                        )}
                     </div>
-                )}
-            </div>
-
-            <div className="input-container">
-                <input
-                    ref={inputRef}
-                    type="text"
-                    value={message}
-                    onChange={(e) => setMessage(e.target.value)}
-                    onKeyDown={handleKeyDown}
-                    placeholder={
-                        isHealthMode 
-                            ? (language === 'fil' 
-                                ? "Ilarawan ang iyong mga sintomas..." 
-                                : "Describe your symptoms...")
-                            : (language === 'fil'
-                                ? "Mag-type ng mensahe..."
-                                : "Type a message...")
-                    }
-                    disabled={isLoading || connectionStatus !== 'connected'}
-                    autoFocus
-                    className="chat-input"
-                    aria-label={isHealthMode 
-                        ? (language === 'fil' ? "Input para sa mga sintomas" : "Symptom input") 
-                        : (language === 'fil' ? "Input para sa mensahe" : "Message input")}
-                />
-                <button 
-                    onClick={sendMessage} 
-                    disabled={isLoading || connectionStatus !== 'connected' || !message.trim()}
-                    className={`send-button ${isHealthMode ? 'health-send' : ''}`}
-                    aria-label={language === 'fil' ? 'Ipadala' : 'Send'}
-                >
-                    {isLoading 
-                        ? <div className="button-loading"></div>
-                        : (language === 'fil' ? 'Ipadala' : 'Send')}
-                </button>
-            </div>
-
-            {(conversation.some(msg => msg.isHealth) || isHealthMode) && (
-                <div className="medical-disclaimer">
-                    <small>
-                        {language === 'fil' 
-                            ? "PAALALA: Ang impormasyong ito ay para lamang sa pagpapayo at hindi dapat gamitin bilang kapalit ng propesyonal na pagsusuri medikal. Kung may emergency, mangyaring tumawag sa lokal na emergency number." 
-                            : "DISCLAIMER: This information is for advice only and should not be used as a substitute for professional medical evaluation. In case of emergency, please call your local emergency number."}
-                    </small>
+                    <div className="input-container">
+                        <input
+                            type="text"
+                            value={message}
+                            onChange={(e) => setMessage(e.target.value)}
+                            onKeyPress={handleKeyPress}
+                            placeholder="Type a message..."
+                            disabled={isLoading}
+                        />
+                        <button
+                            onMouseDown={startListening}
+                            onMouseUp={stopListening}
+                            onTouchStart={startListening}
+                            onTouchEnd={stopListening}
+                            className={`mic-btn${isListening ? " listening" : ""}`}
+                            title="Hold to Speak"
+                            style={{
+                                marginRight: '6px',
+                                background: isListening ? '#007bff' : '#f1f1f1',
+                                color: isListening ? '#fff' : '#007bff',
+                                border: 'none',
+                                borderRadius: '50%',
+                                width: '38px',
+                                height: '38px',
+                                fontSize: '20px',
+                                cursor: 'pointer',
+                                outline: 'none',
+                            }}
+                        >🎤</button>
+                        <button onClick={handleButtonClick} disabled={!message.trim() && !isLoading}>
+                            {isLoading ? 'Stop' : 'Send'}
+                        </button>
+                    </div>
                 </div>
-            )}
+            </div>
         </div>
     );
 };
