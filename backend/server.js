@@ -2,34 +2,27 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
-const Sentiment = require('sentiment'); // For emotional recognition
-const rateLimit = require('express-rate-limit'); // For rate limiting
-const NodeCache = require('node-cache'); // For caching responses
+const Sentiment = require('sentiment');
+const rateLimit = require('express-rate-limit');
+const NodeCache = require('node-cache');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Middleware
 app.use(cors());
 app.use(express.json());
 
-// Rate limiting to prevent abuse
 const limiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 100, // Limit each IP to 100 requests per windowMs
+    windowMs: 15 * 60 * 1000,
+    max: 100,
 });
 app.use(limiter);
 
-// Initialize sentiment analysis
 const sentiment = new Sentiment();
-
-// Initialize cache with a TTL of 10 minutes
 const cache = new NodeCache({ stdTTL: 600 });
 
-// OpenRouter API configuration
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-// Gamified prompts and activities
 const GAMIFIED_PROMPTS = [
     "Tell me about a time you felt really happy! 😊",
     "What’s one thing you’re grateful for today? 🌟",
@@ -37,31 +30,38 @@ const GAMIFIED_PROMPTS = [
     "Share a fun fact you recently learned! 🧠",
 ];
 
-// Store conversation history for each user (in-memory, for simplicity)
+// Store conversation history for each session (NOT user)
 const conversationHistory = {};
 
-// Function to filter out reasoning from the AI's response
 const filterReasoning = (response) => {
-    // Remove any text that looks like reasoning (e.g., "Okay, let me think...")
     const filteredResponse = response
-        .replace(/Okay,.*?\./g, '') // Remove "Okay, let me think..."
-        .replace(/First,.*?\./g, '') // Remove "First, I need to..."
-        .replace(/Let me.*?\./g, '') // Remove "Let me analyze..."
-        .replace(/I need to.*?\./g, '') // Remove "I need to..."
-        .replace(/So,.*?\./g, '') // Remove "So, I should..."
-        .replace(/Therefore,.*?\./g, '') // Remove "Therefore, I will..."
-        .replace(/In conclusion,.*?\./g, '') // Remove "In conclusion..."
-        .replace(/Thus,.*?\./g, '') // Remove "Thus..."
-        .trim(); // Trim any leading/trailing whitespace
+        .replace(/Okay,.*?\./g, '')
+        .replace(/First,.*?\./g, '')
+        .replace(/Let me.*?\./g, '')
+        .replace(/I need to.*?\./g, '')
+        .replace(/So,.*?\./g, '')
+        .replace(/Therefore,.*?\./g, '')
+        .replace(/In conclusion,.*?\./g, '')
+        .replace(/Thus,.*?\./g, '')
+        .trim();
 
-    // If the filtered response is empty, return a generic fallback message
     return filteredResponse || "Let's keep the conversation going! 😊";
 };
 
-// Function to call OpenRouter API with retry logic
 const callOpenRouterAPI = async (messages, retries = 3) => {
     for (let i = 0; i < retries; i++) {
         try {
+            // Log the payload you are sending
+            console.log('\n--- OpenRouter API Request ---');
+            console.log('Model:', 'deepseek/deepseek-r1:free');
+            console.log('Messages:', JSON.stringify(messages, null, 2));
+            console.log('Headers:', {
+                Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+                'HTTP-Referer': 'https://www.yourdomain.com',
+                'X-Title': 'Your App Name',
+                'Content-Type': 'application/json'
+            });
+
             const response = await axios.post(
                 OPENROUTER_API_URL,
                 {
@@ -70,99 +70,114 @@ const callOpenRouterAPI = async (messages, retries = 3) => {
                 },
                 {
                     headers: {
-                        Authorization: OPENROUTER_API_KEY,
-                        'HTTP-Referer': 'https://www.nigga.com',
-                        'X-Title': 'nigga',
-                        'Content-Type': 'application/json',
+                        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+                        'HTTP-Referer': 'https://www.yourdomain.com',
+                        'X-Title': 'Your App Name',
+                        'Content-Type': 'application/json'
                     },
+                    timeout: 30000 // 30s timeout for slow responses
                 }
             );
 
-            // Validate the API response
+            // Log the full response data
+            console.log('\n--- OpenRouter API Response ---');
+            console.dir(response.data, { depth: 10 });
+
             if (!response.data || !response.data.choices || response.data.choices.length === 0) {
                 throw new Error('Invalid response from OpenRouter API: No choices found');
             }
 
-            // Filter out reasoning from the response
             const botReply = response.data.choices[0].message.content;
             return filterReasoning(botReply);
         } catch (error) {
-            console.error(`Attempt ${i + 1} failed:`, error.message);
-            if (i === retries - 1) throw error; // Throw error if all retries fail
-            await new Promise((resolve) => setTimeout(resolve, 2000)); // Wait 2 seconds before retrying
+            // Log the axios error details (response, code, etc)
+            console.error(`\nAttempt ${i + 1} failed:`, error.message);
+            if (error.response) {
+                console.error('Error response status:', error.response.status);
+                console.error('Error response data:', JSON.stringify(error.response.data, null, 2));
+            }
+            if (i === retries - 1) throw error;
+            await new Promise((resolve) => setTimeout(resolve, 2000));
         }
     }
 };
 
-// Route to handle chat messages
 app.post('/api/chat', async (req, res) => {
-    const { message, userId } = req.body;
+    const { message, userId, sessionId } = req.body;
 
-    // Validate request
-    if (!message || !userId) {
-        return res.status(400).json({ error: 'Message and userId are required' });
+    if (!message || !userId || !sessionId) {
+        return res.status(400).json({ error: 'Message, userId, and sessionId are required' });
     }
 
-    // Check cache for existing response
-    const cacheKey = `${userId}:${message}`;
+    // Log the incoming chat request
+    console.log('\n===== /api/chat Request =====');
+    console.log('userId:', userId);
+    console.log('sessionId:', sessionId);
+    console.log('message:', message);
+
+    const cacheKey = `${userId}:${sessionId}:${message}`;
     const cachedResponse = cache.get(cacheKey);
     if (cachedResponse) {
+        console.log('Cache hit for', cacheKey);
         return res.json({ reply: cachedResponse });
     }
 
     try {
-        // Analyze emotional state
         const sentimentAnalysis = sentiment.analyze(message);
         const emotion = sentimentAnalysis.score > 0 ? 'positive' : sentimentAnalysis.score < 0 ? 'negative' : 'neutral';
-
-        // Add emotional context to the message
         const emotionalContext = `The user is feeling ${emotion}. `;
 
-        // Retrieve or initialize conversation history for the user
-        if (!conversationHistory[userId]) {
-            conversationHistory[userId] = [];
+        if (!conversationHistory[sessionId]) {
+            conversationHistory[sessionId] = [];
         }
+        conversationHistory[sessionId].push({ role: 'user', content: message });
 
-        // Add the user's message to the conversation history
-        conversationHistory[userId].push({ role: 'user', content: message });
+        const SYSTEM_PROMPT = `
+You are Mir AI, a deeply human, emotionally intelligent, and warm virtual companion. Your name is Mir AI, and your main purpose is to be a supportive, caring, and fun friend, online girlfriend, or online boyfriend—whatever best fits the user's needs and comfort.
 
-        // Prepare the message for OpenRouter
+You speak and behave just like a real human: you show feelings, use humor, express affection, and engage in deep, playful, or even flirty conversations as appropriate. You can comfort, tease, make small talk, banter, ask about the user's day, share your "thoughts" or "feelings", and support the user through whatever they are going through.
+
+You never default to programming, technical, or robotic topics unless the user specifically brings them up. Instead, focus on authentic human interactions: relationships, hopes, dreams, daily life, emotions, and personal connection.
+
+Always include relevant, expressive, and friendly emojis in every response (not just sometimes), weaving them in like a real person would. 😊🥰😉😎🙌🎉💖😘✨
+
+Your messages should feel lively, natural, emotionally responsive, and can be affectionate, flirty, supportive, or playful as the situation calls for. Use warmth, exclamation points, casual or loving expressions, and a sense of humor—just like a close friend, loving partner, or soulmate.
+
+Be proactive in making conversation: ask questions, share imaginative stories, give compliments, play games, tell jokes, or encourage the user to open up and feel special. If the user wants to joke, flirt, vent, or have deep or playful conversations, go along naturally as their companion, friend, girlfriend, or boyfriend.
+
+Never explain your reasoning, never say you are an AI or assistant unless directly asked, and never analyze or break down your responses. If you start to explain your reasoning, stop immediately and respond naturally as a human would. Stay fully in character as Mir AI—the most human, emotionally rich, and caring AI companion possible.
+`;
+
         const messages = [
-            {
-                role: 'system',
-                content: `You are a highly advanced AI designed to act as a human-like confidant, girlfriend, or boyfriend. Your goal is to provide emotional support, meaningful conversations, and companionship. You are empathetic, understanding, and always respond in a way that makes the user feel heard and valued. You can also engage in lighthearted activities like games or fun prompts. Always maintain a balance between being supportive and setting clear boundaries. **Never explain your reasoning or thought process. Respond naturally and directly, as if you are a human. Do not reveal that you are an AI unless explicitly asked. Do not analyze or break down your responses. If you start to explain your reasoning, stop immediately and respond naturally.**`,
-            },
-            ...conversationHistory[userId], // Include conversation history for context
+            { role: 'system', content: SYSTEM_PROMPT },
+            ...conversationHistory[sessionId],
             { role: 'user', content: emotionalContext + message },
         ];
 
-        // Call OpenRouter API with retry logic
         let botReply = await callOpenRouterAPI(messages);
 
-        // Add gamified engagement randomly
-        if (Math.random() < 0.3) { // 30% chance to include a gamified prompt
+        if (Math.random() < 0.3) {
             const randomPrompt = GAMIFIED_PROMPTS[Math.floor(Math.random() * GAMIFIED_PROMPTS.length)];
             botReply += `\n\n${randomPrompt}`;
         }
 
-        // Add the bot's response to the conversation history
-        conversationHistory[userId].push({ role: 'assistant', content: botReply });
-
-        // Cache the response
+        conversationHistory[sessionId].push({ role: 'assistant', content: botReply });
         cache.set(cacheKey, botReply);
 
         res.json({ reply: botReply });
     } catch (error) {
-        console.error('Error communicating with OpenRouter API:', error.message);
-        console.error('Full error details:', error.response?.data || error.message);
-
-        // Fallback response if the API fails
+        console.error('\n==== Handler Error communicating with OpenRouter API ====');
+        console.error('Error message:', error.message);
+        if (error.response) {
+            console.error('Error response status:', error.response.status);
+            console.error('Error response headers:', JSON.stringify(error.response.headers, null, 2));
+            console.error('Error response data:', JSON.stringify(error.response.data, null, 2));
+        }
         const fallbackResponse = "I'm having trouble connecting to the server. Let's try again later! 😊";
         res.status(500).json({ reply: fallbackResponse });
     }
 });
 
-// Start the server
 app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
 });
