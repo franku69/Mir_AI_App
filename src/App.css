@@ -1,23 +1,24 @@
 body {
   font-family: Arial, sans-serif;
-  background-color: #e0e0e0;
+  background-color: #6e6687;
   margin: 0;
   padding: 0;
   height: 100vh;
 }
 
 .phone-wrapper {
-  width: 100%;
-  max-width: 450px; /* Slightly larger than chat-container for casing effect */
+  flex: 1 1 auto; /* Take remaining space */
+  max-width: 450px;
   height: 94vh;
-  max-height: 780px; /* Slightly larger than chat-container for casing effect */
-  background-color: #000; /* Black color for the phone bezel */
-  border-radius: 40px; /* Rounded corners for the phone casing */
-  padding: 15px; /* Padding to act as the bezel */
-  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5); /* Deeper shadow for more realistic depth */
+  max-height: 780px;
+  background-color: #000;
+  border-radius: 40px;
+  padding: 15px;
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
   display: flex;
   justify-content: center;
   align-items: center;
+  margin: 0 auto; /* Center if needed */
 }
 
 .chat-container {
@@ -34,7 +35,7 @@ body {
 }
 
 .chat-header {
-  background-color: #007bff;
+  background-color: #1d1841;
   color: #fff;
   padding: 16px;
   font-size: 18px;
@@ -69,7 +70,7 @@ body {
 }
 
 .message.user {
-  background-color: #007bff;
+  background-color: #2E2666;
   color: #fff;
   align-self: flex-end;
 }
@@ -135,7 +136,7 @@ input:focus {
 
 button {
   padding: 12px 24px;
-  background-color: #007bff;
+  background-color: #2E2666;
   color: #fff;
   border: none;
   border-radius: 24px;
@@ -145,7 +146,7 @@ button {
 }
 
 button:hover {
-  background-color: #0056b3;
+  background-color: #2E2666;
   transform: translateY(-2px);
 }
 
@@ -155,15 +156,14 @@ button:disabled {
   transform: none;
 }
 .app-root {
-    display: flex;
-    min-height: 100vh;
-    height: 100vh;
-    width: 100vw; /* Optional, for full width */
-    gap: 390px;    /* 👈 Add this line for a 32px gap, adjust as you like */
+  display: flex;
+  min-height: 100vh;
+  width: 100%;
+  overflow: hidden;
 }
 
 .sidebar {
-    background: #f5f5f7;
+    background: #2e2557;
     border-right: 1px solid #ddd;
     height: 100vh;
     padding-top: 0;
@@ -176,14 +176,14 @@ button:disabled {
 
 .sidebar-header {
     padding: 18px 10px 10px 10px;
-    border-bottom: 1px solid #ececec;
+    border-bottom: 1px solid #2e2557;
     background: #f5f5f7;
 }
 
 .new-chat-btn {
     width: 100%;
     padding: 8px 0;
-    background-color: #007bff;
+    background-color: #2e2557;
     color: #fff;
     border: none;
     border-radius: 18px;
@@ -313,4 +313,29 @@ button:disabled {
   gap: 6px;
   width: 100%;
   flex-wrap: wrap;
+}
+/* AD PLACEHOLDER STYLES */
+.ad-placeholder {
+  flex: 0 0 auto;
+  width: 180px; /* Adjust if needed */
+  height: 100vh; /* Match sidebar height */
+  background-color: #f9f9f9;
+  border-left: 1px solid #ddd;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+.ad-placeholder img {
+  width: auto;
+  height: 100%; /* Full height of .sidebar */
+  max-width: none;
+  object-fit: contain; /* Or 'cover' depending on preference */
+}
+
+@media (max-width: 768px) {
+  .ad-placeholder {
+    display: none;
+  }
 }
